@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speaking Tutor</title>
+  <link rel="stylesheet" href="/public/styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Speaking Tutor</h1>
+    <p class="subtitle">WebRTC + OpenAI Realtime API</p>
+
+    <div class="controls">
+      <button id="start">Start</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+
+    <div class="status-box">
+      <div class="status-label">Status</div>
+      <div id="status" class="status-text ready">Ready</div>
+    </div>
+
+    <audio id="audio" autoplay playsinline></audio>
+    <div class="log" id="log"></div>
+  </div>
+
+  <script src="/public/app.js"></script>
+</body>
+</html>

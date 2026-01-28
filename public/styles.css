@@ -1,0 +1,23 @@
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: Arial, sans-serif; background:#0f172a; color:#f1f5f9; padding:20px; }
+.container { max-width: 720px; margin: 0 auto; }
+h1 { margin-bottom: 8px; }
+.subtitle { color:#cbd5e1; margin-bottom: 16px; }
+
+.controls { display:flex; gap:10px; margin-bottom: 16px; }
+button { flex:1; padding:12px; border-radius:8px; border:0; cursor:pointer; font-weight:700; }
+#start { background:#38bdf8; color:#0f172a; }
+#stop { background:#ef4444; color:#fff; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+
+.status-box { background:#1e293b; padding:12px; border-radius:8px; border-left:4px solid #38bdf8; margin-bottom: 12px; }
+.status-label { font-size:12px; color:#94a3b8; text-transform:uppercase; }
+.status-text { margin-top:6px; font-size:16px; font-weight:700; }
+.status-text.connecting { color:#fbbf24; }
+.status-text.ready { color:#38bdf8; }
+.status-text.error { color:#ef4444; }
+.status-text.listening { color:#8b5cf6; }
+
+audio { width:100%; margin: 12px 0; background:#1e293b; border-radius:8px; padding:10px; }
+.log { background:#0b1220; border:1px solid #334155; border-radius:8px; padding:12px; height:260px; overflow:auto; font-family: Consolas, monospace; font-size:12px; color:#10b981; }
+.log .err { color:#ef4444; }
