@@ -2,6 +2,7 @@ const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const audioEl = document.getElementById("audio");
 const startBtn = document.getElementById("start");
+const statusMessageEl = document.getElementById("read-message");
 const stopBtn = document.getElementById("stop");
 
 let pc = null;
@@ -65,29 +66,12 @@ async function start() {
     
     // DEBUG: verifica se o SDP tá completo
     console.log("SDP offer length:", offer.sdp.length);
-     
-    // SDP offer length:
-    //1632
 
     console.log("SDP offer first 100 chars:", offer.sdp.substring(0, 100));
 
-    // SDP offer first 100 chars: 
-    // v=0
-    // o=- 1890451027434753848 2 IN IP4 127.0.0.1
-    // s=-
-    // t=0 0
-    // a=group:BUNDLE 0 1
-    // a=extmap-allow-mixe
-
     setStatus("Calling /session ...", "connecting");
     
-    // BACKUP
-    // const resp = await fetch("/session", {
-    //   method: "POST",
-    //   headers: { "Content-Type": "application/sdp" },
-    //   body: offer.sdp,  // ← Tem que ser STRING, não objeto
-    // });
-
+    // Call the api and create the session with SDP offer
     const resp = await fetch("/session", {
       method: "POST",
       body: offer.sdp,

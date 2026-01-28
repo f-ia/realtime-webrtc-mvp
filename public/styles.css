@@ -18,6 +18,9 @@ button:disabled { opacity:.5; cursor:not-allowed; }
 .status-text.error { color:#ef4444; }
 .status-text.listening { color:#8b5cf6; }
 
+.status-message-box { display:flex; background:#1e293b; padding:12px; margin-top: 35px; border-radius:8px; border-left:4px solid #38bdf8; margin-bottom: 12px; justify-content: center; align-items: center; height: 150px; }
+.status-message-label { font-size:22px; color:#38bdf8; text-transform:uppercase; }
+
 audio { width:100%; margin: 12px 0; background:#1e293b; border-radius:8px; padding:10px; }
 .log { background:#0b1220; border:1px solid #334155; border-radius:8px; padding:12px; height:260px; overflow:auto; font-family: Consolas, monospace; font-size:12px; color:#10b981; }
 .log .err { color:#ef4444; }
