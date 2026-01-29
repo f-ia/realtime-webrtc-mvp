@@ -1,31 +1,58 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Speaking Tutor</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speaking Practice</title>
   <link rel="stylesheet" href="/public/styles.css">
 </head>
 <body>
   <div class="container">
-    <h1>Speaking Tutor</h1>
-    <p class="subtitle">WebRTC + OpenAI Realtime API</p>
+    <header>
+      <div class="logo">Wizard Person</div>
+      <h1>Speaking Practice</h1>
+      <p class="subtitle">Leia a frase em voz alta</p>
+      
+    </header>
 
-    <div class="controls">
-      <button id="start">Start</button>
-      <button id="stop" disabled>Stop</button>
+    <div class="progress-section">
+      <div class="progress-info">
+        <span id="exerciseNumber">Exercício 0 de 0</span>
+        <span id="progressPercent">0%</span>
+      </div>
+      <div class="progress-bar-container">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
     </div>
 
-    <div class="status-box">
-      <div class="status-label">Status</div>
-      <div id="status" class="status-text ready">Ready</div>
+    <div class="exercise-card">
+      <div class="exercise-header">
+        <span class="tag" id="difficulty">-</span>
+        <button id="playTarget" class="btn-play" title="Ouvir pronúncia correta">🔊</button>
+      </div>
+
+      <div class="phrase-text-box">
+        <p id="phraseText">Clique em START para carregar as frases</p>
+      </div>
+
+      <div class="phrase-translation">
+        <p id="phraseTranslation">-</p>
+      </div>
+
+      <div class="status-box">
+        <span id="status" class="status-text ready">Pronto</span>
+      </div>
     </div>
 
-    <audio id="audio" autoplay playsinline></audio>
-    <div class="log" id="log"></div>
+    <div class="button-group">
+      <button id="start" class="btn btn-primary">🎙️ START</button>
+      <button id="retry" class="btn btn-secondary" disabled>🔁 RETRY</button>
+      <button id="stop" class="btn btn-danger" disabled>⏹️ STOP</button>
+    </div>
 
-    <div class="status-message-box">
-      <div class=status-message-label id="read-message">Text Message Test Here</div>
+    <div class="log-box">
+      <h3>📋 Logs</h3>
+      <div id="log"></div>
     </div>
   </div>
 
