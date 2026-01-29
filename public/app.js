@@ -1,5 +1,5 @@
 // ===== CONFIG =====
-const AUDIO_PLAYBACK_RATE = 1.15; // ajuste aqui: 1.1 ~ 1.25 costuma ficar bom
+const AUDIO_PLAYBACK_RATE = 1.15;
 
 // ===== ESTADO GLOBAL =====
 let phrases = [];
@@ -14,7 +14,6 @@ let lastResult = null;
 let attemptsByPhraseId = {};
 let recordingSessionId = 0;
 
-// controla áudio concorrente (evita sobreposição)
 let currentAudioEl = null;
 
 const states = {
@@ -128,7 +127,6 @@ function playBase64Audio(audioBase64, mime = "audio/mpeg") {
 
   audio.playbackRate = AUDIO_PLAYBACK_RATE;
 
-  // alguns browsers suportam isso (não é obrigatório, mas ajuda na naturalidade)
   try {
     audio.preservesPitch = true;
     audio.mozPreservesPitch = true;
@@ -166,27 +164,28 @@ function setVisible(el, visible) {
   el.classList.toggle("hidden", !visible);
 }
 
+// ===== VERIFICAR SE É ÚLTIMA FRASE =====
+function isLastPhrase() {
+  return currentIndex === phrases.length - 1;
+}
+
 // ===== UI =====
 function renderUI() {
-  // status só quando “ocupado”
   if (statusBoxEl) {
     const show = [states.LOADING, states.RECORDING, states.EVALUATING].includes(currentState);
     setVisible(statusBoxEl, show);
   }
 
-  // defaults
   startBtn.disabled = true;
   retryBtn.disabled = true;
   nextBtn.disabled = true;
   stopBtn.disabled = true;
 
-  // visibilidade defaults
   setVisible(startBtn, true);
   setVisible(retryBtn, false);
   setVisible(nextBtn, false);
   setVisible(stopBtn, false);
 
-  // remove pulse
   startBtn.classList.remove("is-recording");
 
   if (currentState === states.IDLE) {
@@ -223,17 +222,28 @@ function renderUI() {
   }
 
   if (currentState === states.SHOWING_RESULT) {
-    // regra: errou → só retry; acertou → só próximo
-    setVisible(startBtn, false);
-    setVisible(retryBtn, true);
-    setVisible(nextBtn, true);
+    // Lógica: sucesso = mostra PRÓXIMO (ou nada na última frase)
+    //         erro = mostra RETRY
 
     if (lastResult?.success) {
-      nextBtn.disabled = false;
-      retryBtn.disabled = true;
+      // Acertou
+      if (isLastPhrase()) {
+        // Última frase: só mostra RETRY pra poder refazer se quiser
+        // Mas se refizer e acertar, avança automaticamente
+        setVisible(retryBtn, true);
+        retryBtn.disabled = false;
+        setVisible(nextBtn, false);
+      } else {
+        // Não é última: mostra PRÓXIMO
+        setVisible(nextBtn, true);
+        nextBtn.disabled = false;
+        setVisible(retryBtn, false);
+      }
     } else {
+      // Errou: mostra RETRY
+      setVisible(retryBtn, true);
       retryBtn.disabled = false;
-      nextBtn.disabled = true;
+      setVisible(nextBtn, false);
     }
     return;
   }
@@ -299,7 +309,7 @@ function showPhrase() {
 async function startRecording() {
   if (currentState !== states.SHOWING_PHRASE) return;
 
-  stopCurrentAudio(); // evita gravar enquanto áudio está tocando
+  stopCurrentAudio();
 
   audioChunks = [];
   isRecording = true;
@@ -385,15 +395,48 @@ function showResult(result) {
     attemptsByPhraseId[currentPhrase.id]
   }`;
 
+  // ===== EXIBE RESULTADO NA TELA (SEM DUPLICATA) =====
   if (result.success) {
-    showResultCard(true, "Muito bem!", result.feedback || "Vamos ao próximo.", meta);
+    // Só exibe o título "Muito bem!" e meta
+    showResultCard(true, "Muito bem!", "", meta);
   } else {
-    showResultCard(false, "Quase! Vamos tentar de novo", result.feedback || "Repita a frase.", meta);
+    // Só exibe o título "Quase!" e meta (feedback IA vem no áudio)
+    showResultCard(false, "Quase!", "", meta);
   }
 
-  // importante: o áudio tocado aqui deve ser “o áudio da frase” (seu backend pode retornar isso)
-  if (result.audio_base64) {
-    playBase64Audio(result.audio_base64, result.mime || "audio/mpeg").catch(() => log(TUTOR.blockedAudio));
+  // ===== TOCA O ÁUDIO DO FEEDBACK (não da frase) =====
+  // Prioridade: feedback_tts via TTS > audio_base64 do backend
+  const feedbackTts = (result.feedback_tts || "").toString().trim();
+
+  if (feedbackTts) {
+    // Usa TTS pra gerar áudio do feedback (garantido sem duplicata)
+    ttsSpeak(feedbackTts).catch(() => {
+      log(TUTOR.blockedAudio);
+    });
+  } else if (result.audio_base64) {
+    // Fallback: se o backend retornou áudio já pronto
+    playBase64Audio(result.audio_base64, result.mime || "audio/mpeg").catch(() => {
+      log(TUTOR.blockedAudio);
+    });
+  }
+
+  // ===== Exibe tips (se houver) e feedback completo no log =====
+  if (result.feedback) {
+    log(`💬 ${result.feedback}`);
+  }
+  if (result.tips && Array.isArray(result.tips) && result.tips.length > 0) {
+    const tipsText = result.tips.join(" • ");
+    log(`💡 Dicas: ${tipsText}`);
+  }
+
+  // ===== AUTO-AVANÇAR NA ÚLTIMA FRASE SE ACERTOU =====
+  if (result.success && isLastPhrase()) {
+    // Acertou a última frase! Avança automaticamente após o áudio terminar
+    const delayMs = 2500; // Aguarda 2.5s pra áudio sair completamente
+    setTimeout(() => {
+      currentIndex++;
+      showPhrase();
+    }, delayMs);
   }
 
   renderUI();

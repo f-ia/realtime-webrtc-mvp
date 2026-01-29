@@ -18,7 +18,7 @@ if not API_KEY:
     raise RuntimeError("OPENAI_API_KEY não definida no .env")
 
 PASS_SCORE = int(os.getenv("PASS_SCORE", "80"))
-STT_MODEL = os.getenv("STT_MODEL", "whisper-1")
+STT_MODEL = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 
 Voice = Literal["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
@@ -31,7 +31,7 @@ client = OpenAI(api_key=API_KEY)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -117,6 +117,76 @@ def ext_from_mime(mime: str) -> str:
         return "m4a"
     return "webm"
 
+def is_last_phrase(phrase_id: int) -> bool:
+    """Verifica se é a última frase"""
+    return phrase_id == PHRASES[-1]["id"]
+
+def generate_personalized_feedback(expected_text: str, transcript: str, score: int, pass_score: int, phrase_id: int) -> tuple[str, str, list[str]]:
+    """
+    Chama o modelo de chat pra gerar feedback IA personalizado.
+    Retorna: (feedback_ui, feedback_tts, tips)
+    """
+    exp_normalized = normalize_text(expected_text).split()
+    hyp_normalized = normalize_text(transcript).split()
+
+    missing_words = [w for w in exp_normalized if w not in hyp_normalized]
+    extra_words = [w for w in hyp_normalized if w not in exp_normalized]
+
+    error_context = ""
+    if missing_words:
+        error_context += f"Palavras que faltaram: {', '.join(missing_words[:3])}. "
+    if extra_words:
+        error_context += f"Palavras extras: {', '.join(extra_words[:3])}. "
+
+    is_last = is_last_phrase(phrase_id)
+
+    prompt = f"""Você é um tutor de pronúncia de inglês para alunos brasileiros.
+Gere um feedback curto, específico e motivador em JSON.
+
+Contexto:
+- Frase esperada: "{expected_text}"
+- O aluno disse: "{transcript}"
+- Acurácia: {score}%
+- Meta: {pass_score}%
+- É a última frase: {is_last}
+{error_context if error_context else ""}
+
+REGRAS:
+1. NUNCA repita a frase inteira no feedback_tts
+2. feedback_ui pode ter emoji e é para exibir na tela
+3. feedback_tts é para o TTS falar - sem emoji, sem "repita a frase"
+4. tips é um array de até 3 dicas de pronúncia/articulação
+5. NUNCA mencione "próximo exercício" ou "curso concluído" - o app já cuida disso
+6. Responda SOMENTE em JSON válido, sem markdown
+7. Exemplo: {{"feedback_ui": "🟡 A palavra 'new' ficou cortada...", "feedback_tts": "A palavra new ficou cortada. Tente alongar o som.", "tips": ["Exagere o 'oo' em 'new'", "Faça uma pausa micro antes de 'friend'"]}}
+
+Agora gere o feedback JSON (sem markdown, apenas o objeto):"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=300,
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Tenta parsear JSON
+        import json
+        feedback_json = json.loads(response_text)
+        
+        feedback_ui = feedback_json.get("feedback_ui", "🟡 Tente novamente.")
+        feedback_tts = feedback_json.get("feedback_tts", "Tente novamente.")
+        tips = feedback_json.get("tips", [])
+        
+        return feedback_ui, feedback_tts, tips
+    
+    except Exception as e:
+        print(f"Erro ao gerar feedback IA: {e}")
+        # Fallback genérico
+        return "🟡 Tente novamente.", "Tente novamente.", []
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -172,30 +242,48 @@ async def evaluate(request: Request):
         with open(tmp_path, "wb") as f:
             f.write(audio_bytes)
 
+        # ===== STT COM PROMPT =====
         with open(tmp_path, "rb") as f:
             transcript_obj = client.audio.transcriptions.create(
                 model=STT_MODEL,
                 file=f,
+                language="en",
+                prompt=expected_text,
             )
 
         transcript = (getattr(transcript_obj, "text", "") or "").strip()
         score = word_accuracy_percent(expected_text, transcript)
         success = score >= PASS_SCORE
 
-        feedback = "✅ Muito bem! Vamos ao próximo." if success else "🟡 Tente novamente. Repita a frase."
+        # ===== FEEDBACK =====
+        if success:
+            is_last = is_last_phrase(phrase_id)
+            if is_last:
+                # Última frase: só feedback positivo, sem mencionar conclusão
+                feedback_ui = "✅ Perfeito! Você acertou!"
+                feedback_tts = "Perfeito! Você acertou!"
+            else:
+                feedback_ui = "✅ Muito bem! Vamos ao próximo."
+                feedback_tts = "Muito bem! Vamos ao próximo."
+            tips = []
+        else:
+            # Tutor IA gera feedback personalizado
+            feedback_ui, feedback_tts, tips = generate_personalized_feedback(
+                expected_text, transcript, score, PASS_SCORE, phrase_id
+            )
 
-        # >>> MUDANÇA PRINCIPAL (demo): áudio retornado sempre 1:1 com a frase da tela
-        # (seu front pode tocar isso em playbackRate > 1.0)
+        # ===== TTS DO FEEDBACK (não da frase) =====
         audio_b64 = None
         try:
             audio = client.audio.speech.create(
                 model=TTS_MODEL,
                 voice=TTS_VOICE,
-                input=expected_text,  # 1:1 com o texto em tela
+                input=feedback_tts,
                 response_format="mp3",
             )
             audio_b64 = base64.b64encode(audio.content).decode("utf-8")
-        except Exception:
+        except Exception as e:
+            print(f"Erro ao gerar TTS: {e}")
             audio_b64 = None
 
         return {
@@ -204,13 +292,16 @@ async def evaluate(request: Request):
             "pass_score": PASS_SCORE,
             "transcript": transcript,
             "expected": expected_text,
-            "feedback": feedback,
+            "feedback": feedback_ui,
+            "feedback_tts": feedback_tts,
+            "tips": tips,
             "phrase_id": phrase_id,
             "audio_base64": audio_b64,
             "mime": "audio/mpeg",
         }
 
     except Exception as e:
+        print(f"Erro no /evaluate: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
     finally:

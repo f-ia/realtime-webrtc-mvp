@@ -213,6 +213,7 @@ header .subtitle { font-size: 14px; color: var(--color-text-secondary); font-wei
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 24px;
+   margin-top: 24px;
 }
 
 .btn {
