@@ -17,7 +17,7 @@ API_KEY = os.getenv("OPENAI_API_KEY")
 if not API_KEY:
     raise RuntimeError("OPENAI_API_KEY não definida no .env")
 
-PASS_SCORE = int(os.getenv("PASS_SCORE", "80"))
+PASS_SCORE = int(os.getenv("PASS_SCORE", "90"))
 STT_MODEL = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 
