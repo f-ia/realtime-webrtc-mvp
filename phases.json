@@ -1,0 +1,23 @@
+[
+{
+"id": 1,
+"text": "My birthday is next week.",
+"translation": "Meu aniversário é semana que vem.",
+"difficulty": "Easy",
+"topic": "Personal"
+},
+{
+"id": 2,
+"text": "I like to drink water in the morning.",
+"translation": "Eu gosto de beber água pela manhã.",
+"difficulty": "Easy",
+"topic": "Daily Routine"
+},
+{
+"id": 3,
+"text": "I loved meeting my new friend.",
+"translation": "Eu adorei conhecer meu novo amigo.",
+"difficulty": "Easy",
+"topic": "Social"
+}
+]
