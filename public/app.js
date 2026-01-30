@@ -1,500 +1,183 @@
-// ===== CONFIG =====
-const AUDIO_PLAYBACK_RATE = 1.15;
+let pc = null;
+let dc = null;
+let stream = null;
 
-// ===== ESTADO GLOBAL =====
 let phrases = [];
 let currentIndex = 0;
-let currentPhrase = null;
 
-let mediaRecorder = null;
-let audioChunks = [];
-let isRecording = false;
+let buffer = "";
+let isEvaluating = false;
+let armed = false;
+let connected = false;
 
-let lastResult = null;
-let attemptsByPhraseId = {};
-let recordingSessionId = 0;
-
-let currentAudioEl = null;
-
-const states = {
-  IDLE: "idle",
-  LOADING: "loading",
-  SHOWING_PHRASE: "showing_phrase",
-  RECORDING: "recording",
-  EVALUATING: "evaluating",
-  SHOWING_RESULT: "showing_result",
-  COMPLETED: "completed",
+const log = (msg) => {
+  document.querySelector("#logs").innerHTML += msg + "<br>";
 };
 
-let currentState = states.IDLE;
-
-// ===== TEXTOS =====
-const TUTOR = {
-  idle: "Clique START para começar",
-  loading: "Carregando frases...",
-  ready: "Clique RECORD e leia a frase",
-  recording: "Gravando... (Clique STOP quando terminar)",
-  evaluating: "Avaliando...",
-  completed: "Parabéns! Você completou tudo!",
-  blockedAudio: "O navegador bloqueou o áudio automático. Clique no 🔊.",
-};
-
-// ===== DOM =====
-const startBtn = document.getElementById("start");
-const retryBtn = document.getElementById("retry");
-const nextBtn = document.getElementById("next");
-const stopBtn = document.getElementById("stop");
-const playTargetBtn = document.getElementById("playTarget");
-
-const statusBoxEl = document.getElementById("statusBox");
-const statusEl = document.getElementById("status");
-
-const logEl = document.getElementById("log");
-
-const phraseTextEl = document.getElementById("phraseText");
-const phraseTranslationEl = document.getElementById("phraseTranslation");
-
-const exerciseNumberEl = document.getElementById("exerciseNumber");
-const difficultyEl = document.getElementById("difficulty");
-
-const progressBarEl = document.getElementById("progressBar");
-const progressPercentEl = document.getElementById("progressPercent");
-
-const resultCard = document.getElementById("resultCard");
-const resultIcon = document.getElementById("resultIcon");
-const resultTitle = document.getElementById("resultTitle");
-const resultMsg = document.getElementById("resultMsg");
-const resultMeta = document.getElementById("resultMeta");
-
-// ===== UTILS =====
-function setStatus(text, cls = "ready") {
-  if (!statusEl) return;
-
-  const nextClass = `status-text ${cls}`;
-  const sameText = statusEl.textContent === text;
-  const sameClass = statusEl.className === nextClass;
-  if (sameText && sameClass) return;
-
-  statusEl.textContent = text;
-  statusEl.className = nextClass;
-}
-
-function log(msg) {
-  if (!logEl) return;
-  const div = document.createElement("div");
-  div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-  logEl.appendChild(div);
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function updateProgress() {
-  const total = phrases.length || 0;
-  const percentage = total ? (currentIndex / total) * 100 : 0;
-  progressBarEl.style.width = percentage + "%";
-  progressPercentEl.textContent = Math.round(percentage) + "%";
-}
-
-function hideResultCard() {
-  resultCard.classList.add("hidden");
-  resultCard.classList.remove("ok", "warn");
-}
-
-function showResultCard(ok, title, msg, meta) {
-  resultCard.classList.remove("hidden", "ok", "warn");
-  resultCard.classList.add(ok ? "ok" : "warn");
-
-  resultIcon.textContent = ok ? "✅" : "🟡";
-  resultTitle.textContent = title;
-  resultMsg.textContent = msg;
-  resultMeta.textContent = meta || "";
-}
-
-function stopCurrentAudio() {
-  try {
-    if (!currentAudioEl) return;
-    currentAudioEl.pause();
-    currentAudioEl.currentTime = 0;
-    currentAudioEl.src = "";
-  } catch {}
-  currentAudioEl = null;
-}
-
-function playBase64Audio(audioBase64, mime = "audio/mpeg") {
-  stopCurrentAudio();
-
-  const audio = new Audio(`data:${mime};base64,${audioBase64}`);
-  currentAudioEl = audio;
-
-  audio.playbackRate = AUDIO_PLAYBACK_RATE;
-
-  try {
-    audio.preservesPitch = true;
-    audio.mozPreservesPitch = true;
-    audio.webkitPreservesPitch = true;
-  } catch {}
-
-  audio.onended = () => {
-    audio.src = "";
-    if (currentAudioEl === audio) currentAudioEl = null;
-  };
-
-  return audio.play();
-}
-
-async function ttsSpeak(text) {
-  const resp = await fetch("/tts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  if (!resp.ok) return;
-
-  const data = await resp.json();
-  if (!data.audio_base64) return;
-
-  try {
-    await playBase64Audio(data.audio_base64, data.mime || "audio/mpeg");
-  } catch {
-    log(TUTOR.blockedAudio);
-  }
-}
-
-function setVisible(el, visible) {
-  if (!el) return;
-  el.classList.toggle("hidden", !visible);
-}
-
-// ===== VERIFICAR SE É ÚLTIMA FRASE =====
-function isLastPhrase() {
-  return currentIndex === phrases.length - 1;
-}
-
-// ===== UI =====
-function renderUI() {
-  if (statusBoxEl) {
-    const show = [states.LOADING, states.RECORDING, states.EVALUATING].includes(currentState);
-    setVisible(statusBoxEl, show);
-  }
-
-  startBtn.disabled = true;
-  retryBtn.disabled = true;
-  nextBtn.disabled = true;
-  stopBtn.disabled = true;
-
-  setVisible(startBtn, true);
-  setVisible(retryBtn, false);
-  setVisible(nextBtn, false);
-  setVisible(stopBtn, false);
-
-  startBtn.classList.remove("is-recording");
-
-  if (currentState === states.IDLE) {
-    startBtn.disabled = false;
-    startBtn.textContent = "🎙️ START";
-    setStatus(TUTOR.idle, "ready");
-    return;
-  }
-
-  if (currentState === states.LOADING) {
-    startBtn.textContent = "Carregando...";
-    setStatus(TUTOR.loading, "connecting");
-    return;
-  }
-
-  if (currentState === states.SHOWING_PHRASE) {
-    startBtn.disabled = false;
-    startBtn.textContent = "🎙️ RECORD";
-    setStatus(TUTOR.ready, "ready");
-    return;
-  }
-
-  if (currentState === states.RECORDING) {
-    setVisible(stopBtn, true);
-    stopBtn.disabled = false;
-    setStatus(TUTOR.recording, "listening");
-    startBtn.classList.add("is-recording");
-    return;
-  }
-
-  if (currentState === states.EVALUATING) {
-    setStatus(TUTOR.evaluating, "connecting");
-    return;
-  }
-
-  if (currentState === states.SHOWING_RESULT) {
-    // Lógica: sucesso = mostra PRÓXIMO (ou nada na última frase)
-    //         erro = mostra RETRY
-
-    if (lastResult?.success) {
-      // Acertou
-      if (isLastPhrase()) {
-        // Última frase: só mostra RETRY pra poder refazer se quiser
-        // Mas se refizer e acertar, avança automaticamente
-        setVisible(retryBtn, true);
-        retryBtn.disabled = false;
-        setVisible(nextBtn, false);
-      } else {
-        // Não é última: mostra PRÓXIMO
-        setVisible(nextBtn, true);
-        nextBtn.disabled = false;
-        setVisible(retryBtn, false);
-      }
-    } else {
-      // Errou: mostra RETRY
-      setVisible(retryBtn, true);
-      retryBtn.disabled = false;
-      setVisible(nextBtn, false);
-    }
-    return;
-  }
-
-  if (currentState === states.COMPLETED) {
-    startBtn.disabled = false;
-    startBtn.textContent = "🔄 REINICIAR";
-    setStatus(TUTOR.completed, "success");
-  }
-}
-
-// ===== FLOW =====
 async function loadPhrases() {
-  currentState = states.LOADING;
-  renderUI();
-
-  try {
-    const response = await fetch("/phrases");
-    if (!response.ok) throw new Error("Falha ao carregar frases");
-
-    const data = await response.json();
-    phrases = data.phrases || [];
-    log(`✅ ${phrases.length} frases carregadas`);
-
-    currentIndex = 0;
-    lastResult = null;
-    attemptsByPhraseId = {};
-
-    showPhrase();
-  } catch (err) {
-    log(`❌ ERRO ao carregar: ${err.message}`);
-    currentState = states.IDLE;
-    renderUI();
-  }
+  const res = await fetch("/phrases");
+  const data = await res.json();
+  phrases = data.phrases || [];
+  currentIndex = 0;
+  showPhrase();
 }
 
 function showPhrase() {
   if (currentIndex >= phrases.length) {
-    showCompletion();
+    log("🎉 Sessão concluída!");
     return;
   }
 
-  currentPhrase = phrases[currentIndex];
-  attemptsByPhraseId[currentPhrase.id] = attemptsByPhraseId[currentPhrase.id] || 0;
-
-  phraseTextEl.textContent = currentPhrase.text;
-  phraseTranslationEl.textContent = currentPhrase.translation;
-
-  exerciseNumberEl.textContent = `Exercício ${currentIndex + 1} de ${phrases.length}`;
-  difficultyEl.textContent = currentPhrase.difficulty;
-
-  updateProgress();
-  hideResultCard();
-
-  if (playTargetBtn) playTargetBtn.onclick = () => ttsSpeak(currentPhrase.text);
-
-  lastResult = null;
-  currentState = states.SHOWING_PHRASE;
-  log(`📖 Frase ${currentIndex + 1}: "${currentPhrase.text}"`);
-  renderUI();
+  const phrase = phrases[currentIndex];
+  document.querySelector("#phrase").innerText = phrase.text;
+  document.querySelector("#translation").innerText = phrase.translation;
+  log(`📖 Frase ${currentIndex + 1}: ${phrase.text}`);
 }
 
-async function startRecording() {
-  if (currentState !== states.SHOWING_PHRASE) return;
+async function ensureConnected() {
+  if (connected) return;
 
-  stopCurrentAudio();
+  pc = new RTCPeerConnection();
+  dc = pc.createDataChannel("oai-events");
 
-  audioChunks = [];
-  isRecording = true;
-  const sessionId = ++recordingSessionId;
+  dc.onopen = () => {
+    connected = true;
+    log("🎧 Realtime conectado.");
 
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaRecorder = new MediaRecorder(stream);
+    // habilita VAD e garante que a IA não responda sozinha [web:19]
+    dc.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        modalities: ["text", "audio"],
+        turn_detection: { type: "server_vad", create_response: false },
+        instructions: "Responda em PT-BR. Quando solicitado, retorne SOMENTE JSON válido.",
+      }
+    }));
 
-    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    log("✅ Configurado. Clique FALAR AGORA.");
+  };
 
-    mediaRecorder.onstop = async () => {
-      if (sessionId !== recordingSessionId) return;
+  dc.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    handleRealtimeEvent(msg);
+  };
 
-      currentState = states.EVALUATING;
-      renderUI();
-      log("⏹️ Gravação parada, enviando para servidor...");
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      const mimeType = mediaRecorder.mimeType || "audio/webm";
-      const audioBlob = new Blob(audioChunks, { type: mimeType });
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
 
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        if (sessionId !== recordingSessionId) return;
+  const sdpToSend = pc.localDescription?.sdp || "";
+  log(`🧪 SDP local len=${sdpToSend.length}`);
 
-        const audioBase64 = e.target.result.split(",")[1];
+  const resp = await fetch("/rtc/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sdp: sdpToSend }),
+  });
 
-        try {
-          const response = await fetch("/evaluate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              phrase_id: currentPhrase.id,
-              audio: audioBase64,
-              expected: currentPhrase.text,
-              mime_type: mimeType,
-            }),
-          });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || "Falha no SDP");
 
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Avaliação falhou");
-
-          showResult(result);
-        } catch (err) {
-          log(`❌ ERRO: ${err.message}`);
-          showResultCard(false, "Erro", "Não consegui avaliar agora. Tente novamente.", "");
-          currentState = states.SHOWING_PHRASE;
-          renderUI();
-        }
-      };
-
-      reader.readAsDataURL(audioBlob);
-    };
-
-    mediaRecorder.start();
-    currentState = states.RECORDING;
-    renderUI();
-    log("🎤 Gravação iniciada");
-  } catch (err) {
-    log(`❌ Erro no microfone: ${err.message}`);
-    currentState = states.SHOWING_PHRASE;
-    renderUI();
-  }
+  await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
 }
 
-function stopRecording() {
-  if (!mediaRecorder || !isRecording) return;
-
-  isRecording = false;
-  try {
-    mediaRecorder.stop();
-    mediaRecorder.stream.getTracks().forEach((t) => t.stop());
-  } catch {}
-}
-
-function showResult(result) {
-  lastResult = result;
-  currentState = states.SHOWING_RESULT;
-
-  attemptsByPhraseId[currentPhrase.id] = (attemptsByPhraseId[currentPhrase.id] || 0) + 1;
-
-  const meta = `Acurácia: ${result.score}% (meta: ${result.pass_score ?? 90}%) • Tentativas: ${
-    attemptsByPhraseId[currentPhrase.id]
-  }`;
-
-  // ===== EXIBE RESULTADO NA TELA (SEM DUPLICATA) =====
-  if (result.success) {
-    // Só exibe o título "Muito bem!" e meta
-    showResultCard(true, "Muito bem!", "", meta);
-  } else {
-    // Só exibe o título "Quase!" e meta (feedback IA vem no áudio)
-    showResultCard(false, "Quase!", "", meta);
-  }
-
-  // ===== TOCA O ÁUDIO DO FEEDBACK (não da frase) =====
-  // Prioridade: feedback_tts via TTS > audio_base64 do backend
-  const feedbackTts = (result.feedback_tts || "").toString().trim();
-
-  if (feedbackTts) {
-    // Usa TTS pra gerar áudio do feedback (garantido sem duplicata)
-    ttsSpeak(feedbackTts).catch(() => {
-      log(TUTOR.blockedAudio);
-    });
-  } else if (result.audio_base64) {
-    // Fallback: se o backend retornou áudio já pronto
-    playBase64Audio(result.audio_base64, result.mime || "audio/mpeg").catch(() => {
-      log(TUTOR.blockedAudio);
-    });
-  }
-
-  // ===== Exibe tips (se houver) e feedback completo no log =====
-  if (result.feedback) {
-    log(`💬 ${result.feedback}`);
-  }
-  if (result.tips && Array.isArray(result.tips) && result.tips.length > 0) {
-    const tipsText = result.tips.join(" • ");
-    log(`💡 Dicas: ${tipsText}`);
-  }
-
-  // ===== AUTO-AVANÇAR NA ÚLTIMA FRASE SE ACERTOU =====
-  if (result.success && isLastPhrase()) {
-    // Acertou a última frase! Avança automaticamente após o áudio terminar
-    const delayMs = 2500; // Aguarda 2.5s pra áudio sair completamente
-    setTimeout(() => {
-      currentIndex++;
-      showPhrase();
-    }, delayMs);
-  }
-
-  renderUI();
-}
-
-function showCompletion() {
-  currentState = states.COMPLETED;
-  hideResultCard();
-
-  phraseTextEl.textContent = "🎉 Você completou o curso!";
-  phraseTranslationEl.textContent = "Parabéns por sua dedicação!";
-
-  updateProgress();
-  renderUI();
-  log("🎉 Muito bom! Você completou todos os exercícios!");
-}
-
-// ===== EVENTS =====
-startBtn.onclick = () => {
-  if (currentState === states.IDLE) {
-    logEl.innerHTML = "";
-    loadPhrases();
+function handleRealtimeEvent(event) {
+  // VAD events: quem manda é o servidor [web:84]
+  if (event.type === "input_audio_buffer.speech_started") {
+    if (!armed) return;
+    log("🎤 Detectei fala...");
     return;
   }
-  if (currentState === states.SHOWING_PHRASE) {
-    startRecording();
+
+  if (event.type === "input_audio_buffer.speech_stopped") {
+    if (!armed) return;
+    armed = false;
+    log("⏹️ Fim da fala. Avaliando...");
+    startEvaluation(); // agora é no momento certo
     return;
   }
-  if (currentState === states.COMPLETED) {
-    logEl.innerHTML = "";
-    currentIndex = 0;
-    loadPhrases();
+
+  if (event.type === "response.text.delta") {
+    buffer += event.delta || "";
+    return;
   }
-};
 
-retryBtn.onclick = () => {
-  if (currentState !== states.SHOWING_RESULT) return;
-  if (lastResult?.success) return;
+  if (event.type === "response.done") {
+    const text = buffer.trim();
+    buffer = "";
+    isEvaluating = false;
 
-  currentState = states.SHOWING_PHRASE;
-  hideResultCard();
-  renderUI();
-  startRecording();
-};
+    const obj = safeJson(text);
+    if (!obj) {
+      log("⚠️ JSON inválido. Tente novamente.");
+      return;
+    }
 
-nextBtn.onclick = () => {
-  if (currentState !== states.SHOWING_RESULT) return;
-  if (!lastResult?.success) return;
+    log("🧠 " + obj.feedback);
+    if (obj.result === "pass") nextExercise();
+    else log("🔁 Tente novamente.");
+  }
+}
 
+function safeJson(text) {
+  try { return JSON.parse(text); } catch {}
+  const a = text.indexOf("{"), b = text.lastIndexOf("}");
+  if (a >= 0 && b > a) {
+    try { return JSON.parse(text.slice(a, b + 1)); } catch {}
+  }
+  return null;
+}
+
+function startEvaluation() {
+  if (!dc || dc.readyState !== "open" || isEvaluating) return;
+  isEvaluating = true;
+
+  const phrase = phrases[currentIndex];
+
+  dc.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"],
+      instructions: `
+Você é um avaliador de pronúncia de inglês para brasileiros.
+
+Frase esperada (inglês): "${phrase.text}"
+
+Regras:
+- NÃO repita a frase esperada.
+- O áudio deve ser só feedback curto em PT-BR.
+- O TEXTO deve ser SOMENTE JSON válido (sem markdown e sem texto fora do JSON).
+
+Retorne:
+{"result":"pass|fail","feedback":"comentário curto em português","heard":"o que você entendeu","tips":["até 3 dicas"],"scoreAi":0-100}
+`
+    }
+  }));
+}
+
+function nextExercise() {
   currentIndex++;
   showPhrase();
-};
+}
 
-stopBtn.onclick = () => stopRecording();
+window.addEventListener("DOMContentLoaded", () => {
+  const startBtn = document.querySelector("#startBtn");
+  const talkBtn = document.querySelector("#talkBtn");
 
-window.addEventListener("load", () => {
-  currentState = states.IDLE;
-  hideResultCard();
-  renderUI();
-  log("Pronto. Clique START quando estiver pronto.");
+  startBtn.onclick = async () => {
+    await loadPhrases();
+    await ensureConnected();
+  };
+
+  talkBtn.onclick = async () => {
+    await ensureConnected();
+    if (!dc || dc.readyState !== "open") {
+      log("⚠️ Ainda conectando...");
+      return;
+    }
+    armed = true;
+    log("✅ Pode falar agora.");
+  };
 });
