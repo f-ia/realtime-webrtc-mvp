@@ -48,7 +48,7 @@ img { max-width: 100%; height: auto; }
 /* Header */
 header { text-align: center; margin-bottom: 32px; }
 .brand { display: flex; justify-content: center; margin-bottom: 10px; }
-.brand-logo { height: auto; display: block; }
+.brand-logo { height: auto; display: block; padding-top: 10px; padding-bottom: 10px; }
 header h1 { font-size: 30px; margin-bottom: 4px; margin-top: 6px; font-weight: 900; }
 header .subtitle { font-size: 14px; color: var(--color-text-secondary); font-weight: 600; }
 
@@ -262,6 +262,14 @@ header .subtitle { font-size: 14px; color: var(--color-text-secondary); font-wei
   color: hsl(var(--l-muted-fg));
 }
 .btn-secondary:hover:not(:disabled) { background: rgba(15, 23, 42, 0.04); }
+
+.btn-secondary:disabled {
+  background: transparent;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  color: hsl(var(--l-muted-fg));
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Foco visível (teclado) */
 .btn:focus-visible,

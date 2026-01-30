@@ -7,3 +7,5 @@ openai>=1.54.0
 pydub>=0.25.1
 # For unified eval (gpt-audio): pydub converts browser audio to WAV; imageio-ffmpeg provides ffmpeg in venv
 imageio-ffmpeg>=0.5.0
+# Portuguese TTS for mixed PT/EN tips (PT segments pronounced in Portuguese, EN in English)
+gtts>=2.5.0

@@ -15,6 +15,7 @@ let attemptsByPhraseId = {};
 let recordingSessionId = 0;
 
 let currentAudioEl = null;
+let isPlayingTips = false;
 
 const states = {
   IDLE: "idle",
@@ -35,6 +36,7 @@ const TUTOR = {
   ready: "Clique RECORD e leia a frase",
   recording: "Gravando... (Clique STOP quando terminar)",
   evaluating: "Avaliando...",
+  playingTips: "Reproduzindo dicas...",
   completed: "Parabéns! Você completou tudo!",
   blockedAudio: "O navegador bloqueou o áudio automático. Clique no 🔊.",
 };
@@ -52,6 +54,7 @@ const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 
 const phraseTextEl = document.getElementById("phraseText");
+const phraseTranslationBox = document.getElementById("phraseTranslationBox");
 const phraseTranslationEl = document.getElementById("phraseTranslation");
 
 const exerciseNumberEl = document.getElementById("exerciseNumber");
@@ -146,19 +149,21 @@ function playBase64Audio(audioBase64, mime = "audio/mpeg") {
   });
 }
 
-async function ttsSpeak(text) {
+/** Fetches TTS audio for text (no play). Returns { audio_base64, mime } or null. */
+async function fetchTtsAudio(text) {
   const resp = await fetch("/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
-
-  if (!resp.ok) return;
-
+  if (!resp.ok) return null;
   const data = await resp.json();
-  if (!data.audio_base64) return;
+  return data.audio_base64 ? { audio_base64: data.audio_base64, mime: data.mime || "audio/mpeg" } : null;
+}
 
-  await playBase64Audio(data.audio_base64, data.mime || "audio/mpeg");
+async function ttsSpeak(text) {
+  const audio = await fetchTtsAudio(text);
+  if (audio) await playBase64Audio(audio.audio_base64, audio.mime);
 }
 
 function setVisible(el, visible) {
@@ -174,9 +179,16 @@ function isLastPhrase() {
 // ===== UI =====
 function renderUI() {
   if (statusBoxEl) {
-    const show = [states.LOADING, states.RECORDING, states.EVALUATING].includes(currentState);
+    const show =
+      [states.LOADING, states.RECORDING, states.EVALUATING].includes(currentState) || isPlayingTips;
     setVisible(statusBoxEl, show);
+    if (isPlayingTips) setStatus(TUTOR.playingTips, "listening");
   }
+
+  const showExerciseHeader = ![states.IDLE, states.LOADING].includes(currentState);
+  setVisible(difficultyEl, showExerciseHeader);
+  setVisible(playTargetBtn, showExerciseHeader);
+  setVisible(phraseTranslationBox, showExerciseHeader);
 
   startBtn.disabled = true;
   retryBtn.disabled = true;
@@ -226,14 +238,14 @@ function renderUI() {
   if (currentState === states.SHOWING_RESULT) {
     // Lógica: sucesso = mostra PRÓXIMO (ou nada na última frase)
     //         erro = mostra RETRY
+    if (playTargetBtn) playTargetBtn.disabled = isPlayingTips;
 
     if (lastResult?.success) {
       // Acertou
       if (isLastPhrase()) {
         // Última frase: só mostra RETRY pra poder refazer se quiser
-        // Mas se refizer e acertar, avança automaticamente
         setVisible(retryBtn, true);
-        retryBtn.disabled = false;
+        retryBtn.disabled = isPlayingTips;
         setVisible(nextBtn, false);
       } else {
         // Não é última: mostra PRÓXIMO
@@ -242,11 +254,12 @@ function renderUI() {
         setVisible(retryBtn, false);
       }
     } else {
-      // Errou: mostra RETRY
+      // Errou: mostra RETRY (disabled enquanto tips estão sendo lidas)
       setVisible(retryBtn, true);
-      retryBtn.disabled = false;
+      retryBtn.disabled = isPlayingTips;
       setVisible(nextBtn, false);
     }
+
     return;
   }
 
@@ -313,6 +326,13 @@ async function startRecording() {
 
   stopCurrentAudio();
 
+  // Stop any previous recorder so only one recording uses audioChunks
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    try {
+      mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+    } catch {}
+    mediaRecorder = null;
+  }
   audioChunks = [];
   isRecording = true;
   const sessionId = ++recordingSessionId;
@@ -321,17 +341,21 @@ async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     mediaRecorder = new MediaRecorder(stream);
 
-    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    };
 
     mediaRecorder.onstop = async () => {
       if (sessionId !== recordingSessionId) return;
 
+      // Capture chunks immediately so a new recording cannot overwrite them
+      const chunks = audioChunks.slice();
+      const mimeType = mediaRecorder.mimeType || "audio/webm";
+      const audioBlob = new Blob(chunks, { type: mimeType });
+
       currentState = states.EVALUATING;
       renderUI();
       log("⏹️ Gravação parada, enviando para servidor...");
-
-      const mimeType = mediaRecorder.mimeType || "audio/webm";
-      const audioBlob = new Blob(audioChunks, { type: mimeType });
 
       const reader = new FileReader();
       reader.onload = async (e) => {
@@ -417,7 +441,8 @@ function showResult(result) {
     log(`💬 ${result.feedback}`);
   }
   if (result.tips && Array.isArray(result.tips) && result.tips.length > 0) {
-    const tipsText = result.tips.join(" • ");
+    const stripMarkers = (s) => (typeof s === "string" ? s.replace(/\[\[|\]\]/g, "") : s);
+    const tipsText = result.tips.map(stripMarkers).join(" • ");
     log(`💡 Dicas: ${tipsText}`);
   }
 
@@ -436,11 +461,11 @@ function showResult(result) {
 
 async function playFeedbackSequence(result) {
   const delay = (ms) => new Promise(r => setTimeout(r, ms));
-
-  // Minimal pause between tips so the next phrase starts quickly
-  const pauseBetweenTipsMs = 80;
+  const pauseBetweenTipsMs = 25;
 
   if (!Array.isArray(result.tips) || result.tips.length === 0) {
+    isPlayingTips = true;
+    renderUI();
     try {
       await playBase64Audio(
         result.audio_base64,
@@ -449,18 +474,41 @@ async function playFeedbackSequence(result) {
     } catch {
       log(TUTOR.blockedAudio);
     }
+    isPlayingTips = false;
+    renderUI();
     return;
   }
 
-  for (const feedback of result.tips) {
-    if (!feedback) continue;
+  isPlayingTips = true;
+  renderUI();
 
-    try {
-      await ttsSpeak(feedback);
-      await delay(pauseBetweenTipsMs);
-    } catch {
-      log(TUTOR.blockedAudio);
+  try {
+    const tipTexts = result.tips.filter(Boolean);
+    // Fetch first tip only so playback starts ASAP; fetch rest in background while first plays
+    const firstPromise = fetchTtsAudio(tipTexts[0]);
+    const restPromises = tipTexts.slice(1).map((text) => fetchTtsAudio(text));
+
+    const first = await firstPromise;
+    if (first) {
+      try {
+        await playBase64Audio(first.audio_base64, first.mime);
+      } catch {
+        log(TUTOR.blockedAudio);
+      }
     }
+    for (let i = 0; i < restPromises.length; i++) {
+      await delay(pauseBetweenTipsMs);
+      const a = await restPromises[i];
+      if (!a) continue;
+      try {
+        await playBase64Audio(a.audio_base64, a.mime);
+      } catch {
+        log(TUTOR.blockedAudio);
+      }
+    }
+  } finally {
+    isPlayingTips = false;
+    renderUI();
   }
 }
 
