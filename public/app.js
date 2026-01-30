@@ -352,12 +352,12 @@ async function startRecording() {
           });
 
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || "Avaliação falhou");
+          if (!response.ok) throw new Error(result.error || result.message || "Avaliação falhou");
 
           showResult(result);
         } catch (err) {
           log(`❌ ERRO: ${err.message}`);
-          showResultCard(false, "Erro", "Não consegui avaliar agora. Tente novamente.", "");
+          showResultCard(false, "Erro", err.message || "Não consegui avaliar agora. Tente novamente.", "");
           currentState = states.SHOWING_PHRASE;
           renderUI();
         }
@@ -393,9 +393,12 @@ function showResult(result) {
 
   attemptsByPhraseId[currentPhrase.id] = (attemptsByPhraseId[currentPhrase.id] || 0) + 1;
 
-  const meta = `Acurácia: ${result.score}% (meta: ${result.pass_score ?? 90}%) • Tentativas: ${
+  let meta = `Acurácia: ${result.score}% (meta: ${result.pass_score ?? 90}%) • Tentativas: ${
     attemptsByPhraseId[currentPhrase.id]
   }`;
+  if (result.used_fallback) {
+    meta += " • Transcrição pode ter sido ajustada (fluxo reserva).";
+  }
 
   // ===== EXIBE RESULTADO NA TELA (SEM DUPLICATA) =====
   if (result.success) {
@@ -421,7 +424,7 @@ function showResult(result) {
   // ===== AUTO-AVANÇAR NA ÚLTIMA FRASE SE ACERTOU =====
   if (result.success && isLastPhrase()) {
     // Acertou a última frase! Avança automaticamente após o áudio terminar
-    const delayMs = 3500; // Aguarda pra áudio sair completamente
+    const delayMs = 2500; // Aguarda pra áudio sair completamente
     setTimeout(() => {
       currentIndex++;
       showPhrase();
@@ -434,16 +437,8 @@ function showResult(result) {
 async function playFeedbackSequence(result) {
   const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-  const naturalPause = (text) => {
-    const perChar = 8;
-    const min = 120;
-    const max = 400;
-
-    return Math.min(
-      Math.max(text.length * perChar, min),
-      max
-    );
-  };
+  // Minimal pause between tips so the next phrase starts quickly
+  const pauseBetweenTipsMs = 80;
 
   if (!Array.isArray(result.tips) || result.tips.length === 0) {
     try {
@@ -461,8 +456,8 @@ async function playFeedbackSequence(result) {
     if (!feedback) continue;
 
     try {
-      await ttsSpeak(feedback);      // waits until audio ENDS
-      await delay(naturalPause(feedback)); // breathing pause
+      await ttsSpeak(feedback);
+      await delay(pauseBetweenTipsMs);
     } catch {
       log(TUTOR.blockedAudio);
     }
@@ -523,5 +518,14 @@ window.addEventListener("load", () => {
   currentState = states.IDLE;
   hideResultCard();
   renderUI();
+  fetch("/api/config")
+    .then((r) => r.json())
+    .then((data) => {
+      // Exibe o logBox somente no ambiente de desenvolvimento
+      if (data.environment === "dev") {
+        document.getElementById("logBox")?.classList.remove("hidden");
+      }
+    })
+    .catch(() => {});
   log("Pronto. Clique START quando estiver pronto.");
 });
