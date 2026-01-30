@@ -21,8 +21,8 @@ PASS_SCORE = int(os.getenv("PASS_SCORE", "90"))
 STT_MODEL = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 
-Voice = Literal["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-_ALLOWED_VOICES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+Voice = Literal["nova",]
+_ALLOWED_VOICES = {"nova"}
 voice_env = (os.getenv("TTS_VOICE", "nova") or "nova").lower()
 TTS_VOICE: Voice = cast(Voice, voice_env if voice_env in _ALLOWED_VOICES else "nova")
 
@@ -93,16 +93,6 @@ def levenshtein_distance_words(ref_words, hyp_words) -> int:
             )
     return dp[n][m]
 
-def word_accuracy_percent(expected: str, transcript: str) -> int:
-    ref = normalize_text(expected).split()
-    hyp = normalize_text(transcript).split()
-    if not ref:
-        return 0
-
-    dist = levenshtein_distance_words(ref, hyp)
-    acc = max(0.0, 1.0 - (dist / len(ref)))
-    return int(round(acc * 100))
-
 def ext_from_mime(mime: str) -> str:
     m = (mime or "").lower()
     if "webm" in m:
@@ -121,10 +111,10 @@ def is_last_phrase(phrase_id: int) -> bool:
     """Verifica se é a última frase"""
     return phrase_id == PHRASES[-1]["id"]
 
-def generate_personalized_feedback(expected_text: str, transcript: str, score: int, pass_score: int, phrase_id: int) -> tuple[str, str, list[str]]:
+def generate_personalized_feedback(expected_text: str, transcript: str, pass_score: int, phrase_id: int) -> tuple[str, str, list[str], int, bool]:
     """
     Chama o modelo de chat pra gerar feedback IA personalizado.
-    Retorna: (feedback_ui, feedback_tts, tips)
+    Retorna: (feedback_ui, feedback_tts, tips, scoreAi, targetResult)
     """
     exp_normalized = normalize_text(expected_text).split()
     hyp_normalized = normalize_text(transcript).split()
@@ -140,13 +130,12 @@ def generate_personalized_feedback(expected_text: str, transcript: str, score: i
 
     is_last = is_last_phrase(phrase_id)
 
-    prompt = f"""Você é um tutor de pronúncia de inglês para alunos brasileiros.
-Gere um feedback curto, específico e motivador em JSON.
+    prompt = f"""Você é um professor de inglês para alunos.
+Sua função é avaliar o speaking do aluno, caso o aluno fale errado ou pronuncie errado, você deve corrigir com um feedback curto, em português BR, crítico em JSON.
 
 Contexto:
 - Frase esperada: "{expected_text}"
 - O aluno disse: "{transcript}"
-- Acurácia: {score}%
 - Meta: {pass_score}%
 - É a última frase: {is_last}
 {error_context if error_context else ""}
@@ -155,10 +144,27 @@ REGRAS:
 1. NUNCA repita a frase inteira no feedback_tts
 2. feedback_ui pode ter emoji e é para exibir na tela
 3. feedback_tts é para o TTS falar - sem emoji, sem "repita a frase"
-4. tips é um array de até 3 dicas de pronúncia/articulação
-5. NUNCA mencione "próximo exercício" ou "curso concluído" - o app já cuida disso
-6. Responda SOMENTE em JSON válido, sem markdown
-7. Exemplo: {{"feedback_ui": "🟡 A palavra 'new' ficou cortada...", "feedback_tts": "A palavra new ficou cortada. Tente alongar o som.", "tips": ["Exagere o 'oo' em 'new'", "Faça uma pausa micro antes de 'friend'"]}}
+4. tips é um array de orientações para o aluno
+5. scoreAi é a pontuação estimada (0-100) do aluno baseada APENAS na pronúncia e clareza
+6. Mesmo que o aluno atinja a meta, erros de pronúncia, palavras ou fluidez DEVEM ser apontados
+7. Corrija TODOS os erros identificados
+
+CRITÉRIOS DE PONTUAÇÃO (OBRIGATÓRIO):
+- Avalie a pronuncia de 0 a 100, considere que o aluno seja iniciante.
+- Não avalie de forma critica a entonação, lembre-se que é um aluno iniciante.
+
+ORGANIZAÇÃO DO FEEDBACK (OBRIGATÓRIO):
+- feedback_tts deve conter a orientação PRINCIPAL (1 frase curta)
+- tips deve conter TODAS as orientações, incluindo o conteúdo do feedback_tts
+- tips deve ter NO MÁXIMO 2 itens no total
+- Cada item deve corrigir UM ponto específico
+- Priorize erros que afetam o significado da frase
+- Evite frases genéricas ou motivacionais
+
+9. NUNCA mencione "próximo exercício" ou "curso concluído" - o app já cuida disso
+10. Responda SOMENTE em JSON válido, sem markdown
+11. Exemplo:
+{{"feedback_ui":"🔴 A frase mudou de sentido.","feedback_tts":"A palavra next não foi dita e isso muda o significado.","tips":["A palavra next não foi dita e isso muda o significado.","Almost não funciona nesse contexto.","Use next para falar de tempo futuro."],"scoreAi":40 }}
 
 Agora gere o feedback JSON (sem markdown, apenas o objeto):"""
 
@@ -167,11 +173,18 @@ Agora gere o feedback JSON (sem markdown, apenas o objeto):"""
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=300,
+            max_tokens=1000,
         )
+
+        print("response: ",response)
         
-        response_text = response.choices[0].message.content.strip()
-        
+        content = response.choices[0].message.content
+
+        if not content:
+            raise ValueError("Empty response from AI")
+
+        response_text = content.strip()
+
         # Tenta parsear JSON
         import json
         feedback_json = json.loads(response_text)
@@ -179,13 +192,15 @@ Agora gere o feedback JSON (sem markdown, apenas o objeto):"""
         feedback_ui = feedback_json.get("feedback_ui", "🟡 Tente novamente.")
         feedback_tts = feedback_json.get("feedback_tts", "Tente novamente.")
         tips = feedback_json.get("tips", [])
-        
-        return feedback_ui, feedback_tts, tips
+        scoreAi = feedback_json.get("scoreAi", 0)
+        userPassed = scoreAi >= pass_score
+
+        return feedback_ui, feedback_tts, tips, scoreAi, userPassed
     
     except Exception as e:
         print(f"Erro ao gerar feedback IA: {e}")
         # Fallback genérico
-        return "🟡 Tente novamente.", "Tente novamente.", []
+        return "🟡 Tente novamente.", "Tente novamente.", [], 0, False
 
 @app.get("/health")
 def health():
@@ -252,25 +267,12 @@ async def evaluate(request: Request):
             )
 
         transcript = (getattr(transcript_obj, "text", "") or "").strip()
-        score = word_accuracy_percent(expected_text, transcript)
-        success = score >= PASS_SCORE
 
         # ===== FEEDBACK =====
-        if success:
-            is_last = is_last_phrase(phrase_id)
-            if is_last:
-                # Última frase: só feedback positivo, sem mencionar conclusão
-                feedback_ui = "✅ Perfeito! Você acertou!"
-                feedback_tts = "Perfeito! Você acertou!"
-            else:
-                feedback_ui = "✅ Muito bem! Vamos ao próximo."
-                feedback_tts = "Muito bem! Vamos ao próximo."
-            tips = []
-        else:
-            # Tutor IA gera feedback personalizado
-            feedback_ui, feedback_tts, tips = generate_personalized_feedback(
-                expected_text, transcript, score, PASS_SCORE, phrase_id
-            )
+        # Tutor IA gera feedback personalizado
+        feedback_ui, feedback_tts, tips, scoreAi, userPassed = generate_personalized_feedback(
+            expected_text, transcript, PASS_SCORE, phrase_id,
+        )
 
         # ===== TTS DO FEEDBACK (não da frase) =====
         audio_b64 = None
@@ -287,8 +289,8 @@ async def evaluate(request: Request):
             audio_b64 = None
 
         return {
-            "success": success,
-            "score": score,
+            "success": userPassed,
+            "score": scoreAi,
             "pass_score": PASS_SCORE,
             "transcript": transcript,
             "expected": expected_text,

@@ -122,23 +122,28 @@ function stopCurrentAudio() {
 function playBase64Audio(audioBase64, mime = "audio/mpeg") {
   stopCurrentAudio();
 
-  const audio = new Audio(`data:${mime};base64,${audioBase64}`);
-  currentAudioEl = audio;
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(`data:${mime};base64,${audioBase64}`);
+    currentAudioEl = audio;
 
-  audio.playbackRate = AUDIO_PLAYBACK_RATE;
+    audio.playbackRate = AUDIO_PLAYBACK_RATE;
 
-  try {
-    audio.preservesPitch = true;
-    audio.mozPreservesPitch = true;
-    audio.webkitPreservesPitch = true;
-  } catch {}
+    try {
+      audio.preservesPitch = true;
+      audio.mozPreservesPitch = true;
+      audio.webkitPreservesPitch = true;
+    } catch {}
 
-  audio.onended = () => {
-    audio.src = "";
-    if (currentAudioEl === audio) currentAudioEl = null;
-  };
+    audio.onended = () => {
+      audio.src = "";
+      if (currentAudioEl === audio) currentAudioEl = null;
+      resolve();
+    };
 
-  return audio.play();
+    audio.onerror = reject;
+
+    audio.play().catch(reject);
+  });
 }
 
 async function ttsSpeak(text) {
@@ -147,16 +152,13 @@ async function ttsSpeak(text) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
+
   if (!resp.ok) return;
 
   const data = await resp.json();
   if (!data.audio_base64) return;
 
-  try {
-    await playBase64Audio(data.audio_base64, data.mime || "audio/mpeg");
-  } catch {
-    log(TUTOR.blockedAudio);
-  }
+  await playBase64Audio(data.audio_base64, data.mime || "audio/mpeg");
 }
 
 function setVisible(el, visible) {
@@ -404,21 +406,8 @@ function showResult(result) {
     showResultCard(false, "Quase!", "", meta);
   }
 
-  // ===== TOCA O ÁUDIO DO FEEDBACK (não da frase) =====
-  // Prioridade: feedback_tts via TTS > audio_base64 do backend
-  const feedbackTts = (result.feedback_tts || "").toString().trim();
-
-  if (feedbackTts) {
-    // Usa TTS pra gerar áudio do feedback (garantido sem duplicata)
-    ttsSpeak(feedbackTts).catch(() => {
-      log(TUTOR.blockedAudio);
-    });
-  } else if (result.audio_base64) {
-    // Fallback: se o backend retornou áudio já pronto
-    playBase64Audio(result.audio_base64, result.mime || "audio/mpeg").catch(() => {
-      log(TUTOR.blockedAudio);
-    });
-  }
+  // Play feedback sequence
+  playFeedbackSequence(result);
 
   // ===== Exibe tips (se houver) e feedback completo no log =====
   if (result.feedback) {
@@ -432,7 +421,7 @@ function showResult(result) {
   // ===== AUTO-AVANÇAR NA ÚLTIMA FRASE SE ACERTOU =====
   if (result.success && isLastPhrase()) {
     // Acertou a última frase! Avança automaticamente após o áudio terminar
-    const delayMs = 2500; // Aguarda 2.5s pra áudio sair completamente
+    const delayMs = 3500; // Aguarda pra áudio sair completamente
     setTimeout(() => {
       currentIndex++;
       showPhrase();
@@ -440,6 +429,44 @@ function showResult(result) {
   }
 
   renderUI();
+}
+
+async function playFeedbackSequence(result) {
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+  const naturalPause = (text) => {
+    const perChar = 8;
+    const min = 120;
+    const max = 400;
+
+    return Math.min(
+      Math.max(text.length * perChar, min),
+      max
+    );
+  };
+
+  if (!Array.isArray(result.tips) || result.tips.length === 0) {
+    try {
+      await playBase64Audio(
+        result.audio_base64,
+        result.mime || "audio/mpeg"
+      );
+    } catch {
+      log(TUTOR.blockedAudio);
+    }
+    return;
+  }
+
+  for (const feedback of result.tips) {
+    if (!feedback) continue;
+
+    try {
+      await ttsSpeak(feedback);      // waits until audio ENDS
+      await delay(naturalPause(feedback)); // breathing pause
+    } catch {
+      log(TUTOR.blockedAudio);
+    }
+  }
 }
 
 function showCompletion() {
