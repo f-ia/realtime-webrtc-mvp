@@ -55,12 +55,13 @@ Acesse: **http://127.0.0.1:8000**
 
 ### Variáveis de ambiente (opcional)
 
-| Variável           | Padrão   | Descrição                          |
-|--------------------|----------|------------------------------------|
-| `OPENAI_API_KEY`   | —        | **Obrigatório.** Chave OpenAI.     |
-| `PASS_SCORE`       | `90`     | Nota mínima para passar (0–100).   |
-| `TTS_VOICE`        | `alloy`  | Voz do TTS (alloy, echo, nova, …).  |
-| `ENVIRONMENT`      | `prod`   | `dev` exibe a caixa de logs na UI. |
+| Variável                    | Padrão   | Descrição                                                                 |
+|-----------------------------|----------|-----------------------------------------------------------------------------|
+| `OPENAI_API_KEY`            | —        | **Obrigatório.** Chave OpenAI.                                            |
+| `PASS_SCORE`                | `90`     | Nota mínima para passar (0–100).                                          |
+| `TTS_VOICE`                 | `alloy`  | Voz do TTS (alloy, echo, nova, …).                                        |
+| `ENVIRONMENT`               | `prod`   | `dev` exibe a caixa de logs na UI.                                        |
+| `OPENAI_EVAL_ASSISTANT_ID`  | —        | **Opcional.** ID de um Assistant na OpenAI cujas *instructions* são o template do prompt de avaliação. Use placeholders `{expected_text}`, `{pass_score}`, `{is_last}`. Se não definir, usa o prompt padrão do código. |
 
 Outras opções (modelos, etc.) estão em `docs/SYSTEM_OVERVIEW.md`.
 

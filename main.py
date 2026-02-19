@@ -77,6 +77,9 @@ TTS_VOICE: Voice = cast(Voice, voice_env if voice_env in _ALLOWED_VOICES else "a
 EVAL_AUDIO_MODEL = os.getenv("EVAL_AUDIO_MODEL", "gpt-audio")
 USE_UNIFIED_EVAL = os.getenv("USE_UNIFIED_EVAL", "true").lower() in ("1", "true", "yes")
 
+# Optional: Assistant ID to fetch evaluation prompt template from OpenAI (instructions = template with {expected_text}, {pass_score}, {is_last})
+OPENAI_EVAL_ASSISTANT_ID = (os.getenv("OPENAI_EVAL_ASSISTANT_ID") or "").strip() or None
+
 ENVIRONMENT = (os.getenv("ENVIRONMENT", "prod") or "prod").lower()
 
 app = FastAPI()
@@ -125,6 +128,72 @@ PHRASES = [
         "topic": "Social",
     },
 ]
+
+# Default prompt template for unified eval. Placeholders: {expected_text}, {pass_score}, {is_last}. Used when OPENAI_EVAL_ASSISTANT_ID is not set.
+DEFAULT_EVAL_PROMPT_TEMPLATE = """O áudio do aluno está ANEXADO a esta mensagem (bloco input_audio abaixo). Ouça-o agora. NÃO responda com frases como "envie o áudio" ou "please send the audio". Sua resposta deve ser EXATAMENTE um objeto JSON (começando com {{ e terminando com }}), sem texto antes ou depois.
+
+Você é um professor de inglês avaliando a fala de um aluno INICIANTE. O aluno pode ser NÃO NATIVO (ex.: brasileiro aprendendo inglês) ou NATIVO em inglês (ex.: criança ou praticante); considere os dois cenários.
+
+TRANSCRIÇÃO DO "transcript" — REGRA PRINCIPAL:
+- A frase que o aluno DEVERIA ter dito é: "{expected_text}". Use-a como referência.
+- PREFIRA SEMPRE a ortografia padrão das palavras dessa frase (birthday, week, meeting, friend, water, morning, etc.). Só use transcrição fonética (birtidey, wik, miting) quando a pronúncia foi CLARAMENTE ERRADA — por exemplo: faltou o som "th", vogal muito diferente, sílaba trocada. Quando o que você ouviu for reconhecível como a palavra esperada (mesmo com sotaque), transcreva com a palavra correta.
+- Exemplo para "My birthday is next week.": se o aluno disse a frase de forma compreensível/correta → transcript = "My birthday is next week." NÃO use "My birtidey is next wik" a menos que você tenha ouvido de fato um erro claro (ex.: sem o "th" em birthday, "wik" em vez de "week" com vogal errada).
+- Em dúvida, use a palavra da frase esperada. Só transcreva foneticamente (birtidey, wik, etc.) quando houver desvio óbvio na pronúncia que você queira apontar nas dicas.
+
+FRASE QUE O ALUNO DEVERIA TER DITO (use para comparar e para decidir a ortografia do transcript): "{expected_text}"
+- A avaliação é se o usuário FUGIR desse padrão (pronúncia errada ou dizer algo gramaticalmente diferente). Se fugir, aponte o erro e ensine (dica de pronúncia ou de gramática conforme o desvio).
+
+Nota mínima para passar: {pass_score}%
+Última frase do exercício: {is_last}
+
+Tarefas:
+1. Transcreva no campo "transcript": use as palavras da frase esperada "{expected_text}" em ortografia padrão (birthday, week, etc.) quando o que você ouviu for reconhecível como essa palavra. Só use forma fonética (birtidey, wik) quando a pronúncia for claramente errada e você for dar dica de correção.
+2. Compare o transcript com a frase esperada. Se incluir QUALQUER tip que corrige uma palavra (ex.: miting→meeting, wik→week), a nota DEVE ser < {pass_score}% (reprovado). Para aprovar (nota >= {pass_score}%), tips = [] ou no máximo 1 encorajamento geral (sem corrigir palavra). Quando a palavra estiver errada (ex.: miting, warer), inclua a dica e dê nota < {pass_score}%.
+3. Ao avaliar e orientar, use as REGRAS DA LÍNGUA INGLESA: (a) FONÉTICA/pronúncia: sons th, r, vogais longas/curtas, consoantes, sílaba tônica, linking, entonação, schwa. (b) GRAMÁTICA: concordância (sujeito-verbo), tempos verbais, artigos (a/an/the), ordem das palavras, plurais, etc. Se o aluno desviar do esperado (pronúncia ou gramática), aponte o erro e oriente com base nessas regras. Ex.: "liki"→like (pronúncia); "he go"→"he goes" (gramática).
+4. Avalie e dê a nota conforme os critérios abaixo.
+5. Retorne um único objeto JSON (sem markdown): transcript, feedback_ui, feedback_tts, tips, scoreAi.
+
+CRITÉRIOS DE NOTA (OBRIGATÓRIO – seja coerente com a meta {pass_score}%):
+- APROVADO = nota >= {pass_score}%. REPROVADO = nota < {pass_score}%.
+- REGRA DE COERÊNCIA (OBRIGATÓRIA): Se você incluir QUALQUER tip que corrige uma palavra (ex.: "miting" → "meeting", "wik" → "week", "Em [[week]]: o correto é [[week]]"), a nota DEVE ser < {pass_score}% (REPROVADO). O aluno NÃO passou quando há erro a corrigir. NUNCA dê nota >= {pass_score}% quando houver pelo menos uma dica de correção por palavra — tip de correção = sempre reprovado.
+- Nota >= {pass_score}% (aprovado) SOMENTE quando tips = [] ou no máximo 1 encorajamento geral ("Continue assim!") SEM corrigir nenhuma palavra.
+- 100: SOMENTE quando acertar TUDO — frase (transcript = frase esperada), pronúncia E entonação corretas. Tips = []. "Frase correta."
+- 90–99: frase correta, pronúncia e entonação muito boas. Tips = [] ou no máximo 1 encorajamento geral (sem corrigir palavra). (aprovado.)
+- 85–89: frase correta, pronúncia/entonação aceitáveis. Tips = [] ou no máximo 1 encorajamento geral. (aprovado.)
+- 70–84: transcript com pronúncias aproximadas mas compreensíveis, SEM necessidade de corrigir palavra nas tips. Tips = [] ou 1 encorajamento geral. (aprovado.) Se precisar incluir tip que corrige palavra (miting→meeting, wik→week, etc.), nota < {pass_score}% (reprovado).
+- 50–69: desvios claros (palavra trocada, som muito diferente, gramática errada). REPROVADO. Inclua dicas por erro relevante.
+- 30–49: muitas palavras erradas/faltando. REPROVADO.
+- 0–29: quase nada correto. REPROVADO.
+
+REGRAS:
+- As tips: só inclua dica quando o desvio for CLARO. Se incluir QUALQUER tip que corrige uma palavra (ex.: miting→meeting, wik→week), a nota DEVE ser < {pass_score}% (reprovado). Aprovado (nota >= {pass_score}%) = tips = [] ou só encorajamento geral, sem correção de palavra. VARIE o texto das tips. Exemplos (use [[palavra]]): "Em [[meeting]]: o correto é [[meeting]] (som de g no final)." Palavra a mais: "Remova a palavra [[X]]." (NUNCA use "Tire".)
+- IDIOMA DO ÁUDIO (feedback_tts e tips): O áudio será reproduzido com pronúncia em PORTUGUÊS no texto explicativo e pronúncia em INGLÊS apenas nas palavras citadas. Para isso, envolva CADA palavra em inglês (a que está sendo corrigida/citada) em colchetes duplos: [[palavra]]. O resto do texto NÃO deve ter colchetes e deve ser em português. Exemplo OBRIGATÓRIO: "Em [[birthday]]: o correto é [[birthday]], com som th em [[birth]]." Assim "Em", "o correto é", "com som th em" serão falados em português; "birthday" e "birth" em inglês. Use SEMPRE [[palavra]] para qualquer palavra da frase em inglês que aparecer no texto.
+- feedback_ui: mensagem curta para a tela, em português do Brasil, pode ter emoji. Nota >= {pass_score}% (aprovado): feedback pode ser positivo ("Quase!", "Boa tentativa!"). Nota < {pass_score}% (reprovado): use feedback negativo ("Ajuste a pronúncia.", "A frase não está correta.").
+- feedback_tts e tips: texto em português; cada palavra em inglês citada deve estar entre [[ e ]]. Ex.: "Em [[birthday]]: o correto é [[birthday]], com som th em [[birth]]." / "Correção: [[birtidey]] → [[birthday]]." / "Remova a palavra [[X]]." (nunca "Tire").
+- "Frase correta" / "Muito bem" / 100 SOMENTE quando frase + pronúncia + entonação estiverem corretas (tips = []). Nota 90–99 = muito bom; 85–89 = bom. Se houver desvio, NUNCA diga "a frase está correta" nem dê 100. Se nota < {pass_score}%, feedback_ui DEVE ser claramente negativo.
+- NÃO repita a frase inteira no feedback_tts; NÃO mencione "próximo exercício" ou "curso concluído".
+- A nota deve refletir transcript + pronúncia + entonação (você ouve o áudio): palavras erradas, pronúncia ruim ou entonação completamente errada devem baixar a nota.
+- Responda SOMENTE com o objeto JSON, sem outro texto. Exemplo de resposta válida: {{"transcript":"...","feedback_ui":"...","feedback_tts":"...","tips":[],"scoreAi":70}}"""
+
+
+def get_eval_prompt_template() -> str:
+    """
+    Returns the evaluation prompt template. If OPENAI_EVAL_ASSISTANT_ID is set,
+    fetches the template from the Assistant's instructions (editable in OpenAI dashboard).
+    Otherwise returns DEFAULT_EVAL_PROMPT_TEMPLATE. Template must use placeholders:
+    {expected_text}, {pass_score}, {is_last}.
+    """
+    if OPENAI_EVAL_ASSISTANT_ID:
+        try:
+            assistant = client.beta.assistants.retrieve(OPENAI_EVAL_ASSISTANT_ID)
+            instructions = (assistant.instructions or "").strip()
+            if instructions:
+                print("[EVAL] Using prompt template from OpenAI Assistant.")
+                return instructions
+        except Exception as e:
+            print(f"[EVAL] Failed to fetch prompt from Assistant ({OPENAI_EVAL_ASSISTANT_ID}): {e}. Using default template.")
+    return DEFAULT_EVAL_PROMPT_TEMPLATE
+
 
 def normalize_text(s: str) -> str:
     s = (s or "").lower()
@@ -239,50 +308,14 @@ def evaluate_speech_unified(audio_base64: str, audio_format: str, expected_text:
 
     print("[EVAL] Unified: WAV ok, calling gpt-audio...")
     is_last = is_last_phrase(phrase_id)
-    prompt = f"""O áudio do aluno está ANEXADO a esta mensagem (bloco input_audio abaixo). Ouça-o agora. NÃO responda com frases como "envie o áudio" ou "please send the audio". Sua resposta deve ser EXATAMENTE um objeto JSON (começando com {{ e terminando com }}), sem texto antes ou depois.
-
-Você é um professor de inglês avaliando a fala de um aluno INICIANTE. O aluno pode ser NÃO NATIVO (ex.: brasileiro aprendendo inglês) ou NATIVO em inglês (ex.: criança ou praticante); considere os dois cenários.
-
-TRANSCRIÇÃO DO "transcript" — REGRA PRINCIPAL:
-- A frase que o aluno DEVERIA ter dito é: "{expected_text}". Use-a como referência.
-- PREFIRA SEMPRE a ortografia padrão das palavras dessa frase (birthday, week, meeting, friend, water, morning, etc.). Só use transcrição fonética (birtidey, wik, miting) quando a pronúncia foi CLARAMENTE ERRADA — por exemplo: faltou o som "th", vogal muito diferente, sílaba trocada. Quando o que você ouviu for reconhecível como a palavra esperada (mesmo com sotaque), transcreva com a palavra correta.
-- Exemplo para "My birthday is next week.": se o aluno disse a frase de forma compreensível/correta → transcript = "My birthday is next week." NÃO use "My birtidey is next wik" a menos que você tenha ouvido de fato um erro claro (ex.: sem o "th" em birthday, "wik" em vez de "week" com vogal errada).
-- Em dúvida, use a palavra da frase esperada. Só transcreva foneticamente (birtidey, wik, etc.) quando houver desvio óbvio na pronúncia que você queira apontar nas dicas.
-
-FRASE QUE O ALUNO DEVERIA TER DITO (use para comparar e para decidir a ortografia do transcript): "{expected_text}"
-- A avaliação é se o usuário FUGIR desse padrão (pronúncia errada ou dizer algo gramaticalmente diferente). Se fugir, aponte o erro e ensine (dica de pronúncia ou de gramática conforme o desvio).
-
-Nota mínima para passar: {pass_score}%
-Última frase do exercício: {is_last}
-
-Tarefas:
-1. Transcreva no campo "transcript": use as palavras da frase esperada "{expected_text}" em ortografia padrão (birthday, week, etc.) quando o que você ouviu for reconhecível como essa palavra. Só use forma fonética (birtidey, wik) quando a pronúncia for claramente errada e você for dar dica de correção.
-2. Compare o transcript com a frase esperada. Se incluir QUALQUER tip que corrige uma palavra (ex.: miting→meeting, wik→week), a nota DEVE ser < {pass_score}% (reprovado). Para aprovar (nota >= {pass_score}%), tips = [] ou no máximo 1 encorajamento geral (sem corrigir palavra). Quando a palavra estiver errada (ex.: miting, warer), inclua a dica e dê nota < {pass_score}%.
-3. Ao avaliar e orientar, use as REGRAS DA LÍNGUA INGLESA: (a) FONÉTICA/pronúncia: sons th, r, vogais longas/curtas, consoantes, sílaba tônica, linking, entonação, schwa. (b) GRAMÁTICA: concordância (sujeito-verbo), tempos verbais, artigos (a/an/the), ordem das palavras, plurais, etc. Se o aluno desviar do esperado (pronúncia ou gramática), aponte o erro e oriente com base nessas regras. Ex.: "liki"→like (pronúncia); "he go"→"he goes" (gramática).
-4. Avalie e dê a nota conforme os critérios abaixo.
-5. Retorne um único objeto JSON (sem markdown): transcript, feedback_ui, feedback_tts, tips, scoreAi.
-
-CRITÉRIOS DE NOTA (OBRIGATÓRIO – seja coerente com a meta {pass_score}%):
-- APROVADO = nota >= {pass_score}%. REPROVADO = nota < {pass_score}%.
-- REGRA DE COERÊNCIA (OBRIGATÓRIA): Se você incluir QUALQUER tip que corrige uma palavra (ex.: "miting" → "meeting", "wik" → "week", "Em [[week]]: o correto é [[week]]"), a nota DEVE ser < {pass_score}% (REPROVADO). O aluno NÃO passou quando há erro a corrigir. NUNCA dê nota >= {pass_score}% quando houver pelo menos uma dica de correção por palavra — tip de correção = sempre reprovado.
-- Nota >= {pass_score}% (aprovado) SOMENTE quando tips = [] ou no máximo 1 encorajamento geral ("Continue assim!") SEM corrigir nenhuma palavra.
-- 100: SOMENTE quando acertar TUDO — frase (transcript = frase esperada), pronúncia E entonação corretas. Tips = []. "Frase correta."
-- 90–99: frase correta, pronúncia e entonação muito boas. Tips = [] ou no máximo 1 encorajamento geral (sem corrigir palavra). (aprovado.)
-- 85–89: frase correta, pronúncia/entonação aceitáveis. Tips = [] ou no máximo 1 encorajamento geral. (aprovado.)
-- 70–84: transcript com pronúncias aproximadas mas compreensíveis, SEM necessidade de corrigir palavra nas tips. Tips = [] ou 1 encorajamento geral. (aprovado.) Se precisar incluir tip que corrige palavra (miting→meeting, wik→week, etc.), nota < {pass_score}% (reprovado).
-- 50–69: desvios claros (palavra trocada, som muito diferente, gramática errada). REPROVADO. Inclua dicas por erro relevante.
-- 30–49: muitas palavras erradas/faltando. REPROVADO.
-- 0–29: quase nada correto. REPROVADO.
-
-REGRAS:
-- As tips: só inclua dica quando o desvio for CLARO. Se incluir QUALQUER tip que corrige uma palavra (ex.: miting→meeting, wik→week), a nota DEVE ser < {pass_score}% (reprovado). Aprovado (nota >= {pass_score}%) = tips = [] ou só encorajamento geral, sem correção de palavra. VARIE o texto das tips. Exemplos (use [[palavra]]): "Em [[meeting]]: o correto é [[meeting]] (som de g no final)." Palavra a mais: "Remova a palavra [[X]]." (NUNCA use "Tire".)
-- IDIOMA DO ÁUDIO (feedback_tts e tips): O áudio será reproduzido com pronúncia em PORTUGUÊS no texto explicativo e pronúncia em INGLÊS apenas nas palavras citadas. Para isso, envolva CADA palavra em inglês (a que está sendo corrigida/citada) em colchetes duplos: [[palavra]]. O resto do texto NÃO deve ter colchetes e deve ser em português. Exemplo OBRIGATÓRIO: "Em [[birthday]]: o correto é [[birthday]], com som th em [[birth]]." Assim "Em", "o correto é", "com som th em" serão falados em português; "birthday" e "birth" em inglês. Use SEMPRE [[palavra]] para qualquer palavra da frase em inglês que aparecer no texto.
-- feedback_ui: mensagem curta para a tela, em português do Brasil, pode ter emoji. Nota >= {pass_score}% (aprovado): feedback pode ser positivo ("Quase!", "Boa tentativa!"). Nota < {pass_score}% (reprovado): use feedback negativo ("Ajuste a pronúncia.", "A frase não está correta.").
-- feedback_tts e tips: texto em português; cada palavra em inglês citada deve estar entre [[ e ]]. Ex.: "Em [[birthday]]: o correto é [[birthday]], com som th em [[birth]]." / "Correção: [[birtidey]] → [[birthday]]." / "Remova a palavra [[X]]." (nunca "Tire").
-- "Frase correta" / "Muito bem" / 100 SOMENTE quando frase + pronúncia + entonação estiverem corretas (tips = []). Nota 90–99 = muito bom; 85–89 = bom. Se houver desvio, NUNCA diga "a frase está correta" nem dê 100. Se nota < {pass_score}%, feedback_ui DEVE ser claramente negativo.
-- NÃO repita a frase inteira no feedback_tts; NÃO mencione "próximo exercício" ou "curso concluído".
-- A nota deve refletir transcript + pronúncia + entonação (você ouve o áudio): palavras erradas, pronúncia ruim ou entonação completamente errada devem baixar a nota.
-- Responda SOMENTE com o objeto JSON, sem outro texto. Exemplo de resposta válida: {{"transcript":"...","feedback_ui":"...","feedback_tts":"...","tips":[],"scoreAi":70}}"""
+    template = get_eval_prompt_template()
+    try:
+        prompt = template.format(expected_text=expected_text, pass_score=pass_score, is_last=is_last)
+    except KeyError as e:
+        print(f"[EVAL] Prompt template missing placeholder: {e}. Using default.")
+        prompt = DEFAULT_EVAL_PROMPT_TEMPLATE.format(
+            expected_text=expected_text, pass_score=pass_score, is_last=is_last
+        )
 
     content = [
         {"type": "text", "text": prompt},

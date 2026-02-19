@@ -67,6 +67,7 @@ const resultCard = document.getElementById("resultCard");
 const resultIcon = document.getElementById("resultIcon");
 const resultTitle = document.getElementById("resultTitle");
 const resultMsg = document.getElementById("resultMsg");
+const resultTranscript = document.getElementById("resultTranscript");
 const resultMeta = document.getElementById("resultMeta");
 
 // ===== UTILS =====
@@ -102,14 +103,21 @@ function hideResultCard() {
   resultCard.classList.remove("ok", "warn");
 }
 
-function showResultCard(ok, title, msg, meta) {
+function showResultCard(ok, title, msg, meta, transcript) {
   resultCard.classList.remove("hidden", "ok", "warn");
   resultCard.classList.add(ok ? "ok" : "warn");
 
   resultIcon.textContent = ok ? "✅" : "🟡";
   resultTitle.textContent = title;
-  resultMsg.textContent = msg;
+  resultMsg.textContent = msg || "";
   resultMeta.textContent = meta || "";
+
+  // Show what the user said (same as backend log) when available
+  const transcriptText = (transcript && String(transcript).trim()) || "";
+  if (resultTranscript) {
+    resultTranscript.textContent = transcriptText ? `Você disse: ${transcriptText}` : "";
+    resultTranscript.classList.toggle("hidden", !transcriptText);
+  }
 }
 
 function stopCurrentAudio() {
@@ -381,7 +389,7 @@ async function startRecording() {
           showResult(result);
         } catch (err) {
           log(`❌ ERRO: ${err.message}`);
-          showResultCard(false, "Erro", err.message || "Não consegui avaliar agora. Tente novamente.", "");
+          showResultCard(false, "Erro", err.message || "Não consegui avaliar agora. Tente novamente.", "", null);
           currentState = states.SHOWING_PHRASE;
           renderUI();
         }
@@ -426,11 +434,9 @@ function showResult(result) {
 
   // ===== EXIBE RESULTADO NA TELA (SEM DUPLICATA) =====
   if (result.success) {
-    // Só exibe o título "Muito bem!" e meta
-    showResultCard(true, "Muito bem!", "", meta);
+    showResultCard(true, "Muito bem!", "", meta, result.transcript);
   } else {
-    // Só exibe o título "Quase!" e meta (feedback IA vem no áudio)
-    showResultCard(false, "Quase!", "", meta);
+    showResultCard(false, "Quase!", "", meta, result.transcript);
   }
 
   // Play feedback sequence

@@ -202,6 +202,7 @@ header .subtitle { font-size: 14px; color: var(--color-text-secondary); font-wei
 }
 .result-title { font-weight: 900; margin-bottom: 4px; }
 .result-msg { font-weight: 700; }
+.result-transcript { margin-top: 8px; font-size: 14px; color: var(--color-text); font-style: italic; }
 .result-meta { margin-top: 6px; font-size: 12px; color: var(--color-text-secondary); }
 
 /* BOTÕES lado a lado (pílula) */
